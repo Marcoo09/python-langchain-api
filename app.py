@@ -1,14 +1,17 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-import httpx, json
+import json
+from langchain.chat_models import ChatOllama
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 app = FastAPI()
 
 # --- CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # frontend
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -17,43 +20,33 @@ app.add_middleware(
 @app.post("/chat")
 async def chat(req: Request):
     body = await req.json()
-    model = "llama3.1"  # force llama3.1 for now
+    model = body.get("model", "llama3.1")
+    if isinstance(model, dict):  # <-- unwrap dict from frontend
+        model = model.get("id", "llama3.1")
+
     messages = body.get("messages", [])
     prompt = body.get("prompt") or "You are a helpful assistant."
     temperature = body.get("temperature", 0.7)
 
-    # flatten messages into a single prompt string
-    user_prompt = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
-    full_prompt = f"{prompt}\n{user_prompt}"
+    # Convert messages into LangChain message objects
+    lc_messages = []
+    if prompt:
+        lc_messages.append(SystemMessage(content=prompt))
+    for m in messages:
+        if m["role"] == "user":
+            lc_messages.append(HumanMessage(content=m["content"]))
+        elif m["role"] == "assistant":
+            lc_messages.append(AIMessage(content=m["content"]))
 
-    payload = {
-        "model": model,
-        "prompt": full_prompt,
-        "options": {"temperature": temperature}
-    }
+    llm = ChatOllama(
+        model=model,  # <-- now guaranteed to be a string
+        temperature=temperature,
+        streaming=True,
+    )
 
     async def generate():
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "POST",
-                "http://localhost:11434/api/generate",
-                json=payload,
-            ) as r:
-                if r.status_code != 200:
-                    yield f"[Error: {r.status_code} {await r.aread()}]"
-                    return
-
-                async for line in r.aiter_lines():
-                    if not line.strip():
-                        continue
-                    try:
-                        data = json.loads(line)
-                        if "response" in data:
-                            yield data["response"]
-                        if data.get("done", False):
-                            break
-                    except Exception:
-                        yield line
+        async for chunk in llm.astream(lc_messages):
+            yield chunk.content
 
     return StreamingResponse(generate(), media_type="text/plain")
 
