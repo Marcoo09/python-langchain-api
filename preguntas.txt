@@ -1,0 +1,18 @@
+Hola
+
+Que información podrías brindarme?
+
+Quiero datos genericos del data set
+
+Me sirve, dame esos datos
+
+Dame el promedio de scores en examenes, el score más alto y más bajo
+
+Dame los scores de los estudiantes que conoces
+
+Inglés
+
+Hi, which interesting information you might help me?
+
+
+Probar con qa prompt para mostrar como pierde efectividad
