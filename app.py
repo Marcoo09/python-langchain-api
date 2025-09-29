@@ -12,6 +12,10 @@ from langchain.memory import ConversationBufferMemory
 from langchain_core.documents import Document
 from langchain.prompts import PromptTemplate
 
+from langchain.agents import initialize_agent, Tool
+from langchain_community.tools import WikipediaQueryRun
+from langchain_community.utilities import WikipediaAPIWrapper
+
 app = FastAPI()
 
 app.add_middleware(
@@ -72,9 +76,9 @@ memory = ConversationBufferMemory(memory_key="chat_history", return_messages=Tru
 qa_prompt = PromptTemplate(
     input_variables=["context", "question"],
     template="""You are a helpful assistant. 
-Use ONLY the following context to answer the user's question. 
+Use the ONLY following context to answer the user's question. 
 If the answer is not contained in the context, say "I don’t know".
-You should answer in the language of the question.
+You should answer in English.
 Context:
 {context}
 
@@ -83,13 +87,30 @@ Question:
 
 Answer:"""
 )
+# Option 1 -> simple chain
 qa_chain = ConversationalRetrievalChain.from_llm(
     llm=ChatOllama(model="llama3.1", temperature=0),
     retriever=retriever,
     memory=memory,
     combine_docs_chain_kwargs={"prompt": qa_prompt},
 )
+# Option 2 -> agent with tools
+wiki = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
+tools = [
+    Tool(
+        name="Wikipedia",
+        func=lambda q: str(wiki.run(q)),
+        description="Search Wikipedia for general knowledge like capitals, people, history, etc."
+    ),
+]
 
+agent = initialize_agent(
+    tools,
+    ChatOllama(model="llama3.1", temperature=0),
+    agent_type="openai-functions",
+    verbose=False,
+    handle_parsing_errors=True
+)
 
 @app.post("/chat")
 async def chat(req: Request):
@@ -104,10 +125,17 @@ async def chat(req: Request):
     user_messages = [m["content"] for m in messages if m["role"] == "user"]
     question = user_messages[-1] if user_messages else ""
 
+    mode = "rag"
     async def generate():
         try:
-            result = await qa_chain.ainvoke({"question": question})
-            yield result["answer"]
+            if mode == "agent":
+                result = await agent.ainvoke({"input": question})
+                yield result["output"]
+                return  
+            else:
+                result = await qa_chain.ainvoke({"question": question})
+                yield result["answer"]
+                return  
         except Exception as e:
             yield f"[ERROR: {repr(e)}]"
 
@@ -122,3 +150,8 @@ async def models():
             {"id": "mistral", "name": "Mistral 7B"},
         ]
     )
+
+@app.post("/clear_memory")
+async def clear_memory():
+    memory.clear()
+    return {"status": "ok", "message": "Chat history cleared"}    
